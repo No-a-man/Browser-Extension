@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Transcriber</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 10px;
+    }
+    button {
+      margin: 5px;
+      padding: 8px 12px;
+    }
+    #status {
+      margin-top: 10px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h2>Transcriber</h2>
+  <div id="permissionStatus">Checking permissions...</div>
+
+  <button id="startBtn">Start Recording</button>
+  <button id="stopBtn" disabled>Stop Recording</button>
+
+  <div id="status">Status: Idle</div>
+  <div id="transcript"></div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

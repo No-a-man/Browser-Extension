@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Transcriber",
+  "version": "1.0",
+  "description": "Chrome extension to capture tab audio and transcribe in real-time",
+  "permissions": [
+  
+    "activeTab",
+    "sidePanel",
+    "storage"
+  ],
+  "optional_permissions": [  "tabCapture","background"],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action":  {
+    "default_title": "Transcriber"  },
+  "side_panel": {
+    "default_path": "src/sidepanel.html"
+  },
+  "icons": {
+    "60": "public/Transcribe_Icon_1_optimized.png"
+  }
+}
+
