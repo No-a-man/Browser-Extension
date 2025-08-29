@@ -20,11 +20,16 @@
 <body>
   <h2>Transcriber</h2>
   <div id="permissionStatus">Checking permissions...</div>
+  
+  <p style="font-size: 12px; color: #666; margin: 10px 0;">
+    This extension records audio from the active browser tab. 
+    You'll be asked for permissions on first use.
+  </p>
 
   <button id="startBtn">Start Recording</button>
   <button id="stopBtn" disabled>Stop Recording</button>
 
-  <div id="status">Status: Idle</div>
+  <div id="status">Status: Ready to record - Click Start to begin</div>
   <div id="transcript"></div>
 
   <script src="sidepanel.js"></script>
