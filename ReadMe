@@ -1,0 +1,46 @@
+
+Chrome Extension: Real-Time Audio Transcription
+Project Overview
+This project is a Chrome extension that captures audio from browser tabs and provides real-time transcription in a user-friendly sidepanel interface. The extension is designed to be a tool for capturing and transcribing audio from various sources, such as Google Meet or YouTube, with features like live transcription display, recording controls, and export functionality.
+
+
+
+
+
+Core Features
+
+Sidepanel Interface: The primary user interface is a sidepanel with controls to start and stop recordings, a live display of the transcription, a meeting timer, and status indicators.
+
+
+Audio Capture System: The extension primarily focuses on capturing audio from the active browser tab. 
+
+Bonus features include multi-source support, such as capturing audio from inactive tabs or optional microphone input, with channel labeling.
+
+
+Transcription Integration: The extension processes audio in 30-second chunks. The recommended API for transcription is Google Gemini 2.5 Flash, which can be used for its free-tier availability and good accuracy.
+
+
+
+
+Reliability & Performance: The extension includes error handling with automatic retry logic and graceful degradation. 
+
+
+Bonus features include offline capabilities to buffer audio during connection loss and automatically sync when the connection is restored.
+
+Technical Requirements
+
+Browser Compatibility: The extension is primarily built for Google Chrome (latest version) and requires a minimum of Chrome 88+.
+
+
+Architecture: The project uses Manifest V3, a service worker for background processing, and a sidepanel for the main user interface.
+
+
+Permissions: The extension requires specific permissions to function correctly, including tabCapture, activeTab, sidePanel, and storage. Optional permissions like 
+
+microphone and background are needed for bonus features.
+
+Installation and Setup
+Prerequisites
+Google Chrome (version 88 or higher) 
+
+An API key for a transcription service (e.g., Google Gemini 2.5 Flash)
