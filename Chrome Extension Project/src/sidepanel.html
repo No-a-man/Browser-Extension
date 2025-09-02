@@ -1,36 +1,402 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Transcriber</title>
+  <title>Audio Recorder</title>
   <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
     body {
-      font-family: sans-serif;
-      padding: 10px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: #f5f5f5;
+      color: #333;
     }
-    button {
-      margin: 5px;
-      padding: 8px 12px;
+
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 15px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    #status {
-      margin-top: 10px;
+
+    .header h1 {
+      font-size: 20px;
+      font-weight: 600;
+    }
+
+    /* API key button styles removed since we're using hardcoded key */
+    /* .api-key-btn {
+      background: none;
+      border: none;
+      color: white;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 5px;
+      border-radius: 4px;
+      transition: background-color 0.2s;
+    }
+
+    .api-key-btn:hover {
+      background-color: rgba(255,255,255,0.1);
+    } */
+
+
+
+    .section-icon {
+      width: 20px;
+      height: 20px;
+      background: #667eea;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 12px;
       font-weight: bold;
+      margin-right: 8px;
+    }
+
+    .container {
+      padding: 20px;
+    }
+
+    .section {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    .section-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #333;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+
+
+    .tab-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .tab-item:last-child {
+      border-bottom: none;
+    }
+
+    .tab-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+    }
+
+    .tab-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+
+    .tab-details {
+      flex: 1;
+    }
+
+    .tab-title {
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .tab-subtitle {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .tab-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 200px;
+    }
+
+    .recording-buttons {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .audio-line {
+      width: 100px;
+      height: 4px;
+      background-color: #e0e0e0;
+      border-radius: 2px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .audio-line-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #4CAF50, #2196F3);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.1s ease;
+    }
+
+    .record-btn {
+      background: linear-gradient(135deg, #ff4757, #ff3742);
+      color: white;
+      border: none;
+      border-radius: 20px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.2s;
+      min-width: 80px;
+      justify-content: center;
+    }
+
+    .record-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(255, 71, 87, 0.3);
+    }
+
+    .record-btn.recording {
+      background: linear-gradient(135deg, #ff6b6b, #ee5a52);
+      animation: pulse 2s infinite;
+    }
+
+    .record-btn.paused {
+      background: linear-gradient(135deg, #ffa726, #ff9800);
+    }
+
+    .pause-btn {
+      background: linear-gradient(135deg, #ff9800, #f57c00);
+      min-width: 60px;
+    }
+
+    .pause-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(255, 152, 0, 0.3);
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.02); }
+      100% { transform: scale(1); }
+    }
+
+    .record-icon {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: white;
+    }
+
+    .recordings-list {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .recording-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .recording-item:last-child {
+      border-bottom: none;
+    }
+
+    .recording-info {
+      flex: 1;
+    }
+
+    .recording-title {
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .recording-time {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .recording-sources {
+      display: flex;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    .source-icon {
+      font-size: 12px;
+      opacity: 0.7;
+    }
+
+    .recording-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .action-btn {
+      background: none;
+      border: 1px solid #ddd;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 6px 12px;
+      border-radius: 4px;
+      transition: all 0.2s;
+      font-weight: 500;
+    }
+
+    .action-btn:hover {
+      background-color: #f0f0f0;
+      transform: translateY(-1px);
+    }
+
+    .export-btn {
+      color: #2196F3;
+      border-color: #2196F3;
+    }
+
+    .export-btn:hover {
+      background-color: #2196F3;
+      color: white;
+    }
+
+    .delete-btn {
+      color: #f44336;
+      border-color: #f44336;
+    }
+
+    .delete-btn:hover {
+      background-color: #f44336;
+      color: white;
+    }
+
+    .play-btn {
+      color: #4CAF50;
+      border-color: #4CAF50;
+    }
+
+    .play-btn:hover {
+      background-color: #4CAF50;
+      color: white;
+    }
+
+    .play-btn.playing {
+      background-color: #4CAF50;
+      color: white;
+    }
+
+    .status-text {
+      text-align: center;
+      color: #666;
+      font-size: 14px;
+      margin: 10px 0;
+    }
+
+    .transcription-container {
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 12px;
+      background-color: #fafafa;
+    }
+
+    .transcription-text {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #333;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .transcription-segment {
+      margin-bottom: 8px;
+      padding: 8px;
+      background-color: white;
+      border-radius: 4px;
+      border-left: 3px solid #667eea;
+    }
+
+    .transcription-timestamp {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+
+    .transcription-content {
+      font-weight: 500;
+    }
+
+    .transcription-loading {
+      color: #667eea;
+      font-style: italic;
     }
   </style>
 </head>
 <body>
-  <h2>Transcriber</h2>
-  <div id="permissionStatus">Checking permissions...</div>
-  
-  <p style="font-size: 12px; color: #666; margin: 10px 0;">
-    This extension records audio from the active browser tab. 
-    You'll be asked for permissions on first use.
-  </p>
+  <div class="header">
+    <h1>Audio Recorder</h1>
+  </div>
 
-  <button id="startBtn">Start Recording</button>
-  <button id="stopBtn" disabled>Stop Recording</button>
+  <div class="container">
+            <div class="section">
+          <div class="section-title">
+            Available Tabs
+          </div>
+          
 
-  <div id="status">Status: Ready to record - Click Start to begin</div>
-  <div id="transcript"></div>
+          
+          <div id="tabsList">
+            <!-- Tab items will be populated by JavaScript -->
+          </div>
+        </div>
+
+    <div class="section">
+      <div class="section-title">
+        Recent Recordings
+      </div>
+      <div id="recordingsList" class="recordings-list">
+        <!-- Recordings will be populated by JavaScript -->
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">
+        Live Transcription
+      </div>
+      <div id="transcriptionContainer" class="transcription-container">
+        <div id="transcriptionText" class="transcription-text">
+          <!-- Transcription will appear here -->
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="sidepanel.js"></script>
 </body>
