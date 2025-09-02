@@ -10,12 +10,29 @@ class AudioRecorder {
     this.chunkTimers = new Map(); // tabId -> chunk timer
     
     // Gemini API configuration
-    this.geminiApiKey = 'AIzaSyCg8OOanPeGz-_TtieiTxgV8ScE_4ueh28'; // Replace with your actual API key
+    this.geminiApiKey = 'AIzaSyCg8OOanPeGz-_TtieiTxgV8ScE_4ueh28';
     this.geminiApiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent';
+    
+    // Transcription queue management
+    this.transcriptionQueue = [];
+    this.isProcessingQueue = false;
+    this.lastTranscriptionTime = 0;
+    
+    // Audio conversion management
+    this.audioConversionContexts = [];
+    
+    // Recording duration management
+    this.durationTimers = new Map(); // tabId -> duration timer
+    this.recordingStartTimes = new Map(); // tabId -> recording start time
     
     this.initializeUI();
     this.loadRecordings();
     this.discoverTabs();
+    
+    // Periodic cleanup of audio contexts
+    setInterval(() => {
+      this.cleanupAudioContexts();
+    }, 30000); // Clean up every 30 seconds
   }
 
   initializeUI() {
@@ -29,6 +46,8 @@ class AudioRecorder {
     //   this.promptForApiKey();
     // });
   }
+
+
 
   async discoverTabs() {
     try {
@@ -102,11 +121,10 @@ class AudioRecorder {
     tabItem.innerHTML = `
       <div class="tab-info">
         <div class="tab-icon">
-          <img src="${tab.favIconUrl || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><rect width="16" height="16" fill="%23666"/><text x="8" y="12" font-size="10" text-anchor="middle" fill="white">🌐</text></svg>'}" 
-               alt="tab icon" 
-               style="width: 16px; height: 16px; border-radius: 2px;"
-               onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-          <span style="display: none; font-size: 14px;">🌐</span>
+          ${tab.favIconUrl ? 
+            `<img src="${tab.favIconUrl}" alt="tab icon" style="width: 16px; height: 16px; border-radius: 2px; object-fit: contain;">` : 
+            ''
+          }
         </div>
         <div class="tab-details">
           <div class="tab-title">${tab.title}</div>
@@ -117,12 +135,15 @@ class AudioRecorder {
         <div class="audio-line">
           <div class="audio-line-fill" data-tab-id="${tab.id}"></div>
         </div>
-        <div class="recording-buttons">
-          ${showPauseButton ? `<button class="record-btn pause-btn" data-tab-id="${tab.id}">Pause</button>` : ''}
-          <button class="${buttonClass}" data-tab-id="${tab.id}">
-            <div class="record-icon"></div>
-            ${buttonText}
-          </button>
+        <div class="recording-info">
+          ${isRecording ? `<div class="recording-duration" data-tab-id="${tab.id}">0:00</div>` : ''}
+          <div class="recording-buttons">
+            ${showPauseButton ? `<button class="record-btn pause-btn" data-tab-id="${tab.id}">Pause</button>` : ''}
+            <button class="${buttonClass}" data-tab-id="${tab.id}">
+              <div class="record-icon"></div>
+              ${buttonText}
+            </button>
+          </div>
         </div>
       </div>
     `;
@@ -207,9 +228,6 @@ class AudioRecorder {
        
        console.log('Sidepanel: Tab is audible, proceeding with capture');
        
-               // Set recording state (will be properly set in setupRecording)
-        this.updateTabUI(currentTabId);
-       
        // Show user guidance - update button text to show capturing status
        const recordBtn = document.querySelector(`[data-tab-id="${currentTabId}"]`);
        if (recordBtn) {
@@ -277,7 +295,7 @@ class AudioRecorder {
            
            let errorMessage = 'Unable to capture tab audio. ';
            if (tabCaptureError.message.includes('Extension has not been invoked')) {
-             errorMessage = 'Extension not properly invoked. Please click on the YouTube tab, click the extension icon (🎤) in the toolbar, then try recording again.';
+             errorMessage = 'Extension not properly invoked. Please click on the YouTube tab, click the extension icon in the toolbar, then try recording again.';
            } else if (tabCaptureError.message.includes('Cannot capture Chrome internal pages')) {
              errorMessage = tabCaptureError.message;
            } else if (tabCaptureError.message.includes('Cannot capture this type of page')) {
@@ -352,6 +370,15 @@ class AudioRecorder {
         // Update the recording state to paused
         recording.state = 'paused';
         this.activeRecordings.set(tabId, recording);
+        
+        // Pause duration timer (but keep start time for resume)
+        const durationTimer = this.durationTimers.get(tabId);
+        if (durationTimer) {
+          clearInterval(durationTimer);
+          this.durationTimers.delete(tabId);
+        }
+        // Note: We keep the recordingStartTime so resume can work correctly
+        
         this.updateTabUI(tabId);
       } catch (error) {
         console.error('Sidepanel: Error pausing recording:', error);
@@ -368,6 +395,17 @@ class AudioRecorder {
         // Update the recording state to recording
         recording.state = 'recording';
         this.activeRecordings.set(tabId, recording);
+        
+        // Resume duration timer using stored start time
+        const storedStartTime = this.recordingStartTimes.get(tabId);
+        if (storedStartTime) {
+          const durationTimer = setInterval(() => {
+            const duration = Date.now() - storedStartTime;
+            this.updateRecordingDuration(tabId, duration);
+          }, 1000);
+          this.durationTimers.set(tabId, durationTimer);
+        }
+        
         this.updateTabUI(tabId);
       } catch (error) {
         console.error('Sidepanel: Error resuming recording:', error);
@@ -401,44 +439,67 @@ class AudioRecorder {
         this.transcriptions.set(tabId, []);
         this.renderTranscription(tabId);
         
-                 // Start chunk timer (5 seconds)
-         const chunkTimer = setInterval(async () => {
-           console.log('Sidepanel: Chunk timer fired, currentChunk length:', currentChunk.length);
-           if (currentChunk.length > 0) {
-             console.log('Sidepanel: Processing 5s audio chunk');
-             
-             // Create blob from current chunk
-             const chunkBlob = new Blob(currentChunk, { type: mimeType });
-             const timestamp = new Date(chunkStartTime);
-             console.log('Sidepanel: Created chunk blob, size:', chunkBlob.size, 'type:', mimeType);
-             
-             // Only transcribe if chunk is substantial enough
-             if (chunkBlob.size > 1000) { // At least 1KB of audio data
-               try {
-                 // Transcribe the chunk
-                 const transcription = await this.transcribeAudioChunk(chunkBlob, timestamp);
-                 if (transcription) {
-                   this.addTranscriptionSegment(tabId, transcription, timestamp);
-                 }
-               } catch (error) {
-                 console.warn('Sidepanel: Chunk transcription failed:', error);
-               }
-             } else {
-               console.log('Sidepanel: Chunk too small, skipping transcription');
-             }
-             
-             // Reset for next chunk
-             currentChunk = [];
-             chunkStartTime = Date.now();
-           } else {
-             console.log('Sidepanel: No audio data in current chunk');
-           }
-         }, 5000); // 5 seconds
+        // Get initial video timestamp
+        this.getVideoTimestamp(tabId).then(initialTime => {
+          console.log('Sidepanel: Initial video timestamp:', initialTime);
+        });
+        
+        // Start recording duration timer
+        const recordingStartTime = Date.now();
+        const durationTimer = setInterval(() => {
+          const duration = Date.now() - recordingStartTime;
+          this.updateRecordingDuration(tabId, duration);
+        }, 1000); // Update every second
+        
+        // Store duration timer and start time
+        this.durationTimers.set(tabId, durationTimer);
+        this.recordingStartTimes.set(tabId, recordingStartTime);
+        
+        // Start chunk timer (5 seconds)
+        const chunkTimer = setInterval(async () => {
+          console.log('Sidepanel: Chunk timer fired, currentChunk length:', currentChunk.length);
+          if (currentChunk.length > 0) {
+            console.log('Sidepanel: Processing 5s audio chunk');
+            
+            // Create blob from current chunk
+            const chunkBlob = new Blob(currentChunk, { type: mimeType });
+            
+            // Get current video timestamp for this chunk
+            const videoTimestamp = await this.getVideoTimestamp(tabId);
+            const timestamp = {
+              systemTime: new Date(chunkStartTime),
+              videoTime: videoTimestamp
+            };
+            
+            console.log('Sidepanel: Created chunk blob, size:', chunkBlob.size, 'type:', mimeType, 'video time:', videoTimestamp);
+            
+            // Only transcribe if chunk is substantial enough
+            if (chunkBlob.size > 1000) { // At least 1KB of audio data
+              try {
+                // Transcribe the chunk
+                const transcription = await this.transcribeAudioChunk(chunkBlob, timestamp);
+                if (transcription) {
+                  this.addTranscriptionSegment(tabId, transcription, timestamp);
+                }
+              } catch (error) {
+                console.warn('Sidepanel: Chunk transcription failed:', error);
+              }
+            } else {
+              console.log('Sidepanel: Chunk too small, skipping transcription');
+            }
+            
+            // Reset for next chunk
+            currentChunk = [];
+            chunkStartTime = Date.now();
+          } else {
+            console.log('Sidepanel: No audio data in current chunk');
+          }
+        }, 5000); // 5 seconds
         
         this.chunkTimers.set(tabId, chunkTimer);
       };
 
-                                                 mediaRecorder.onstop = () => {
+                                                 mediaRecorder.onstop = async () => {
           console.log('Sidepanel: Recording stopped, saving recording');
           this.hideAudioLine(tabId);
           
@@ -449,15 +510,21 @@ class AudioRecorder {
             
             // Only transcribe if the final chunk is substantial enough
             if (finalChunkBlob.size > 1000) { // At least 1KB of audio data
-              const finalTimestamp = new Date(chunkStartTime);
-              console.log('Sidepanel: Transcribing final chunk...');
-              this.transcribeAudioChunk(finalChunkBlob, finalTimestamp).then(transcription => {
+              // Get final video timestamp
+              const finalVideoTimestamp = await this.getVideoTimestamp(tabId);
+              const finalTimestamp = {
+                systemTime: new Date(chunkStartTime),
+                videoTime: finalVideoTimestamp
+              };
+              console.log('Sidepanel: Transcribing final chunk at video time:', finalVideoTimestamp);
+              try {
+                const transcription = await this.transcribeAudioChunk(finalChunkBlob, finalTimestamp);
                 if (transcription) {
                   this.addTranscriptionSegment(tabId, transcription, finalTimestamp);
                 }
-              }).catch(error => {
+              } catch (error) {
                 console.warn('Sidepanel: Final chunk transcription failed:', error);
-              });
+              }
             } else {
               console.log('Sidepanel: Final chunk too small, skipping transcription');
             }
@@ -469,6 +536,19 @@ class AudioRecorder {
             clearInterval(chunkTimer);
             this.chunkTimers.delete(tabId);
           }
+          
+          // Clear duration timer
+          const durationTimer = this.durationTimers.get(tabId);
+          if (durationTimer) {
+            clearInterval(durationTimer);
+            this.durationTimers.delete(tabId);
+          }
+          
+          // Clear recording start time
+          this.recordingStartTimes.delete(tabId);
+          
+          // Immediately stop all pending transcriptions for this tab
+          this.stopTranscriptionForTab(tabId);
           
           this.saveRecording(tabId, chunks);
           
@@ -630,27 +710,70 @@ class AudioRecorder {
     this.renderTranscription(tabId);
   }
 
-     updateTabUI(tabId) {
-     // Re-render the specific tab to update its button state
-     const tab = this.tabs.find(t => t.id === tabId);
-     if (tab) {
-       const tabItem = this.createTabItem(tab);
-       const existingTabItem = document.querySelector(`[data-tab-id="${tabId}"]`)?.closest('.tab-item');
-       if (existingTabItem) {
-         // Preserve the audio line state before replacing
-         const currentAudioLine = existingTabItem.querySelector('.audio-line-fill');
-         const currentWidth = currentAudioLine ? currentAudioLine.style.width : '0%';
-         
-         existingTabItem.replaceWith(tabItem);
-         
-         // Restore the audio line state after replacement
-         const newAudioLine = tabItem.querySelector('.audio-line-fill');
-         if (newAudioLine && currentWidth !== '0%') {
-           newAudioLine.style.width = currentWidth;
-         }
-       }
-     }
-   }
+       updateRecordingDuration(tabId, duration) {
+    // Find the duration display element for this tab
+    const durationElement = document.querySelector(`[data-tab-id="${tabId}"] .recording-duration`);
+    if (durationElement) {
+      const formattedDuration = this.formatDuration(duration);
+      durationElement.textContent = formattedDuration;
+      console.log(`Updated duration for tab ${tabId}: ${formattedDuration}`);
+    } else {
+      // If element not found, try to find it by looking through all tab items
+      const allTabItems = document.querySelectorAll('.tab-item');
+      for (const tabItem of allTabItems) {
+        const tabIdElement = tabItem.querySelector('[data-tab-id]');
+        if (tabIdElement && tabIdElement.getAttribute('data-tab-id') === tabId.toString()) {
+          const durationEl = tabItem.querySelector('.recording-duration');
+          if (durationEl) {
+            const formattedDuration = this.formatDuration(duration);
+            durationEl.textContent = formattedDuration;
+            console.log(`Updated duration for tab ${tabId} (found via search): ${formattedDuration}`);
+            return;
+          }
+        }
+      }
+      console.warn(`Duration element not found for tab ${tabId} after search`);
+    }
+  }
+
+  formatDuration(milliseconds) {
+    const totalSeconds = Math.floor(milliseconds / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  getCurrentRecordingDuration(tabId) {
+    const durationElement = document.querySelector(`[data-tab-id="${tabId}"] .recording-duration`);
+    if (durationElement) {
+      const durationText = durationElement.textContent;
+      const [minutes, seconds] = durationText.split(':').map(Number);
+      return minutes * 60 + seconds;
+    }
+    return 0;
+  }
+
+  updateTabUI(tabId) {
+    // Re-render the specific tab to update its button state
+    const tab = this.tabs.find(t => t.id === tabId);
+    if (tab) {
+      const tabItem = this.createTabItem(tab);
+      const existingTabItem = document.querySelector(`[data-tab-id="${tabId}"]`)?.closest('.tab-item');
+      if (existingTabItem) {
+        // Preserve the audio line state before replacing
+        const currentAudioLine = existingTabItem.querySelector('.audio-line-fill');
+        const currentWidth = currentAudioLine ? currentAudioLine.style.width : '0%';
+        
+        existingTabItem.replaceWith(tabItem);
+        
+        // Restore the audio line state after replacement
+        const newAudioLine = tabItem.querySelector('.audio-line-fill');
+        if (newAudioLine && currentWidth !== '0%') {
+          newAudioLine.style.width = currentWidth;
+        }
+      }
+    }
+  }
 
      saveRecording(tabId, chunks) {
      console.log('Sidepanel: Saving recording for tab:', tabId, 'chunks:', chunks.length);
@@ -661,17 +784,19 @@ class AudioRecorder {
        return;
      }
 
-                 const activeRecording = this.activeRecordings.get(tabId);
-      const mimeType = activeRecording ? activeRecording.mimeType : 'audio/webm';
-      const blob = new Blob(chunks, { type: mimeType });
-      const recording = {
-        id: Date.now() + tabId,
-        title: `Recording - ${tab.title}`,
-        timestamp: new Date(),
-        blob: blob,
-        tabId: tabId,
-        domain: new URL(tab.url).hostname
-      };
+     const activeRecording = this.activeRecordings.get(tabId);
+     const mimeType = activeRecording ? activeRecording.mimeType : 'audio/webm';
+     const blob = new Blob(chunks, { type: mimeType });
+     
+     // Create recording with proper timestamp
+     const recording = {
+       id: Date.now() + tabId,
+       title: `Recording - ${typeof tab.title === 'string' ? tab.title : 'Unknown Tab'}`,
+       timestamp: new Date(),
+       blob: blob,
+       tabId: tabId,
+       domain: new URL(tab.url).hostname
+     };
 
      console.log('Sidepanel: Created recording:', recording);
      
@@ -700,12 +825,19 @@ class AudioRecorder {
     const recordingItem = document.createElement('div');
     recordingItem.className = 'recording-item';
     
-    const timeAgo = this.getTimeAgo(recording.timestamp);
+    // Use proper timestamp formatting instead of relative time
+    const formattedTimestamp = this.formatTimestamp(recording.timestamp);
+    
+    // Ensure title is always a string
+    const safeTitle = typeof recording.title === 'string' ? recording.title : 'Recording - Unknown Tab';
+    
+    // Ensure domain is always a string
+    const safeDomain = typeof recording.domain === 'string' ? recording.domain : 'Unknown Domain';
     
     recordingItem.innerHTML = `
       <div class="recording-info">
-        <div class="recording-title">${recording.title}</div>
-        <div class="recording-time">${timeAgo} • ${recording.domain}</div>
+        <div class="recording-title">${safeTitle}</div>
+        <div class="recording-time">${formattedTimestamp} - ${safeDomain}</div>
       </div>
       <div class="recording-actions">
         <button class="action-btn play-btn" data-recording-id="${recording.id}">Play</button>
@@ -736,6 +868,16 @@ class AudioRecorder {
     if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
     if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
     return 'Just now';
+  }
+
+  formatTimestamp(timestamp) {
+    return timestamp.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
   }
 
   togglePlayRecording(recording, playBtn) {
@@ -786,15 +928,60 @@ class AudioRecorder {
   }
 
   exportRecording(recording) {
-    if (!recording.blob) {
-      alert('This recording is no longer available. It may have been loaded from storage without the audio data.');
+    // Get transcription for this recording
+    const tabId = recording.tabId;
+    let transcriptionSegments = this.transcriptions.get(tabId) || [];
+    
+    // If no transcription found by tabId, try to find by recording ID or search all transcriptions
+    if (transcriptionSegments.length === 0) {
+      // Search through all transcriptions to find matching ones
+      for (const [storedTabId, segments] of this.transcriptions.entries()) {
+        if (segments && segments.length > 0) {
+          // Check if any segment has a timestamp close to the recording timestamp
+          const recordingTime = recording.timestamp.getTime();
+          const hasMatchingTime = segments.some(segment => {
+            const segmentTime = new Date(segment.timestamp).getTime();
+            const timeDiff = Math.abs(recordingTime - segmentTime);
+            return timeDiff < 60000; // Within 1 minute
+          });
+          
+          if (hasMatchingTime) {
+            transcriptionSegments = segments;
+            break;
+          }
+        }
+      }
+    }
+    
+    if (transcriptionSegments.length === 0) {
+      alert('No transcription available for this recording. Please ensure the recording has been transcribed.');
       return;
     }
     
-    const url = URL.createObjectURL(recording.blob);
+    // Combine all transcription segments into one text with timestamps
+    const fullTranscription = transcriptionSegments
+      .map(segment => {
+        let timestamp;
+        if (segment.timestamp && typeof segment.timestamp === 'object' && segment.timestamp.videoTime !== undefined) {
+          const videoTime = segment.timestamp.videoTime;
+          const minutes = Math.floor(videoTime / 60);
+          const seconds = videoTime % 60;
+          timestamp = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        } else if (segment.timestamp) {
+          timestamp = new Date(segment.timestamp).toLocaleTimeString();
+        } else {
+          timestamp = 'Unknown time';
+        }
+        return `[${timestamp}] ${segment.text}`;
+      })
+      .join('\n\n');
+    
+    // Create and download transcription file
+    const blob = new Blob([fullTranscription], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${recording.title}-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.webm`;
+    a.download = `${recording.title}-transcription-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -803,6 +990,12 @@ class AudioRecorder {
 
   deleteRecording(recordingId) {
     if (confirm("Are you sure you want to delete this recording?")) {
+      const recording = this.recordings.find(r => r.id === recordingId);
+      if (recording) {
+        // Clean up transcriptions for this recording
+        this.transcriptions.delete(recording.tabId);
+      }
+      
       this.recordings = this.recordings.filter(r => r.id !== recordingId);
       this.saveRecordingsToStorage();
       this.renderRecordings();
@@ -811,6 +1004,7 @@ class AudioRecorder {
 
   saveRecordingsToStorage() {
     console.log('Recordings saved:', this.recordings.length);
+    
     // Convert recordings to storage format (remove blob as it can't be stored)
     const recordingsForStorage = this.recordings.map(recording => ({
       id: recording.id,
@@ -821,11 +1015,20 @@ class AudioRecorder {
       // Note: blob is not stored, it will be recreated when needed
     }));
     
-    chrome.storage.local.set({ recordings: recordingsForStorage }, () => {
+    // Save transcriptions along with recordings
+    const transcriptionsForStorage = {};
+    for (const [tabId, segments] of this.transcriptions.entries()) {
+      transcriptionsForStorage[tabId] = segments;
+    }
+    
+    chrome.storage.local.set({ 
+      recordings: recordingsForStorage,
+      transcriptions: transcriptionsForStorage
+    }, () => {
       if (chrome.runtime.lastError) {
-        console.error('Error saving recordings:', chrome.runtime.lastError);
+        console.error('Error saving recordings and transcriptions:', chrome.runtime.lastError);
       } else {
-        console.log('Recordings saved to storage successfully');
+        console.log('Recordings and transcriptions saved to storage successfully');
       }
     });
   }
@@ -852,6 +1055,255 @@ class AudioRecorder {
   //     });
   //   }
   // }
+
+
+
+
+
+
+
+  async webmBlobToBase64(webmBlob) {
+    try {
+      console.log('Converting WebM blob directly to base64...');
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result.split(',')[1]; // Strip `data:audio/webm;base64,`
+          console.log('Direct WebM base64 conversion complete, length:', base64.length);
+          resolve(base64);
+        };
+        reader.onerror = (error) => {
+          console.error('FileReader error:', error);
+          reject(error);
+        };
+        reader.readAsDataURL(webmBlob);
+      });
+    } catch (error) {
+      console.error('Error converting WebM to base64:', error);
+      throw error;
+    }
+  }
+
+  async webmBlobToWavBase64(webmBlob) {
+    try {
+      console.log('Starting WebM to WAV conversion...');
+      
+      // Validate input
+      if (!webmBlob || webmBlob.size === 0) {
+        throw new Error('Invalid audio blob provided');
+      }
+      
+      // Try to get an existing audio context or create a new one
+      let audioCtx = this.getOrCreateAudioContext();
+      if (!audioCtx) {
+        throw new Error('Failed to create audio context');
+      }
+      
+      try {
+        console.log('Converting blob to array buffer...');
+        const arrayBuffer = await webmBlob.arrayBuffer();
+        console.log('Array buffer size:', arrayBuffer.byteLength, 'bytes');
+        
+        if (arrayBuffer.byteLength === 0) {
+          throw new Error('Empty array buffer');
+        }
+        
+        console.log('Decoding audio data...');
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+        console.log('Audio buffer decoded, length:', audioBuffer.length, 'samples');
+        
+        if (audioBuffer.length === 0) {
+          throw new Error('Empty audio buffer');
+        }
+        
+        console.log('Converting to WAV format...');
+        // Convert to WAV
+        const wav = this.audioBufferToWav(audioBuffer);
+        const wavBlob = new Blob([wav], { type: 'audio/wav' });
+        console.log('WAV blob created, size:', wavBlob.size, 'bytes');
+        
+        if (wavBlob.size === 0) {
+          throw new Error('Empty WAV blob');
+        }
+        
+        console.log('Converting WAV to base64...');
+        // Convert WAV to base64
+        const base64 = await this.blobToBase64(wavBlob);
+        console.log('Base64 conversion complete, length:', base64.length);
+        
+        return base64;
+        
+      } catch (error) {
+        // If decoding fails, mark this context as problematic and try with a new one
+        console.warn('Audio context decoding failed, will try with new context:', error.message);
+        this.markAudioContextAsFailed(audioCtx);
+        throw error;
+      }
+      
+    } catch (error) {
+      console.error('Error converting WebM to WAV:', error);
+      
+      // Try fallback: direct WebM to base64 if WAV conversion fails
+      console.log('Trying fallback WebM to base64 conversion...');
+      try {
+        const base64 = await this.blobToBase64(webmBlob);
+        console.log('Fallback conversion successful, length:', base64.length);
+        return base64;
+      } catch (fallbackError) {
+        console.error('Fallback conversion also failed:', fallbackError);
+        throw new Error(`Audio conversion failed: ${error.message}. Fallback also failed: ${fallbackError.message}`);
+      }
+    }
+  }
+
+  getOrCreateAudioContext() {
+    // Try to find an available audio context
+    for (let i = 0; i < this.audioConversionContexts.length; i++) {
+      const ctx = this.audioConversionContexts[i];
+      if (ctx && ctx.state === 'running') {
+        console.log('Reusing existing audio context');
+        return ctx;
+      }
+    }
+    
+    // Create a new audio context if none available
+    try {
+      console.log('Creating new audio context');
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      this.audioConversionContexts.push(audioCtx);
+      return audioCtx;
+    } catch (error) {
+      console.error('Failed to create audio context:', error);
+      return null;
+    }
+  }
+
+  markAudioContextAsFailed(audioCtx) {
+    // Remove failed audio context from the list
+    const index = this.audioConversionContexts.indexOf(audioCtx);
+    if (index > -1) {
+      this.audioConversionContexts.splice(index, 1);
+      console.log('Removed failed audio context');
+    }
+    
+    // Try to close it gracefully
+    if (audioCtx && audioCtx.state !== 'closed') {
+      try {
+        audioCtx.close();
+      } catch (error) {
+        console.warn('Error closing failed audio context:', error);
+      }
+    }
+  }
+
+  async getVideoTimestamp(tabId) {
+    try {
+      // Inject script to get current video time
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        func: () => {
+          // Try to find video elements and get current time
+          const videos = document.querySelectorAll('video');
+          if (videos.length > 0) {
+            // Use the first video found (usually the main one)
+            const video = videos[0];
+            if (video.currentTime !== undefined && !isNaN(video.currentTime)) {
+              return Math.floor(video.currentTime);
+            }
+          }
+          
+          // Try YouTube specific selectors
+          const youtubePlayer = document.querySelector('.html5-video-player video');
+          if (youtubePlayer && youtubePlayer.currentTime !== undefined) {
+            return Math.floor(youtubePlayer.currentTime);
+          }
+          
+          // Try other common video players
+          const videoPlayers = document.querySelectorAll('[data-video-time], .video-player video, .player video');
+          for (const player of videoPlayers) {
+            if (player.currentTime !== undefined && !isNaN(player.currentTime)) {
+              return Math.floor(player.currentTime);
+            }
+          }
+          
+          // If no video found, return 0
+          return 0;
+        }
+      });
+      
+      if (results && results[0] && results[0].result !== undefined) {
+        const videoTime = results[0].result;
+        console.log('Sidepanel: Retrieved video timestamp:', videoTime);
+        return videoTime;
+      }
+      
+      return 0;
+    } catch (error) {
+      console.warn('Sidepanel: Failed to get video timestamp:', error);
+      return 0;
+    }
+  }
+
+  async blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        try {
+          const base64 = reader.result.split(',')[1]; // Strip data URL prefix
+          if (!base64) {
+            reject(new Error('Failed to extract base64 data'));
+            return;
+          }
+          resolve(base64);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      reader.onerror = (error) => {
+        console.error('FileReader error:', error);
+        reject(error);
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  cleanupAudioContexts() {
+    // Clean up any lingering audio contexts
+    this.audioConversionContexts.forEach(async (ctx) => {
+      if (ctx && ctx.state !== 'closed') {
+        try {
+          await ctx.close();
+        } catch (error) {
+          console.warn('Error closing audio context:', error);
+        }
+      }
+    });
+    this.audioConversionContexts = [];
+    console.log('Audio contexts cleaned up');
+  }
+
+  async cleanupAndRetryAudioConversion(audioBlob, maxRetries = 3) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        console.log(`Audio conversion attempt ${attempt + 1}/${maxRetries}`);
+        
+        // Clean up contexts before retry
+        if (attempt > 0) {
+          this.cleanupAudioContexts();
+          // Wait a bit before retry
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        return await this.webmBlobToWavBase64(audioBlob);
+      } catch (error) {
+        console.warn(`Audio conversion attempt ${attempt + 1} failed:`, error.message);
+        
+        if (attempt === maxRetries - 1) {
+          throw error; // Last attempt failed
+        }
+      }
+    }
+  }
 
   // Utility function to convert audio buffer to WAV
   audioBufferToWav(buffer) {
@@ -895,164 +1347,155 @@ class AudioRecorder {
     return arrayBuffer;
   }
 
-  async webmBlobToBase64(webmBlob) {
-    try {
-      console.log('Converting WebM blob directly to base64...');
-      return await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64 = reader.result.split(',')[1]; // Strip `data:audio/webm;base64,`
-          console.log('Direct WebM base64 conversion complete, length:', base64.length);
-          resolve(base64);
-        };
-        reader.onerror = (error) => {
-          console.error('FileReader error:', error);
-          reject(error);
-        };
-        reader.readAsDataURL(webmBlob);
+  async transcribeAudioChunk(audioBlob, timestamp, retryCount = 0) {
+    if (!this.geminiApiKey || !audioBlob?.size) return null;
+
+    // Add to queue instead of processing immediately
+    return new Promise((resolve) => {
+      this.transcriptionQueue.push({
+        audioBlob,
+        timestamp,
+        retryCount,
+        resolve
       });
-    } catch (error) {
-      console.error('Error converting WebM to base64:', error);
-      throw error;
-    }
+      
+      // Start processing queue if not already running
+      if (!this.isProcessingQueue) {
+        this.processTranscriptionQueue();
+      }
+    });
   }
 
-  async webmBlobToWavBase64(webmBlob) {
-    try {
-      console.log('Starting WebM to WAV conversion...');
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      
-      console.log('Converting blob to array buffer...');
-      const arrayBuffer = await webmBlob.arrayBuffer();
-      console.log('Array buffer size:', arrayBuffer.byteLength, 'bytes');
-      
-      console.log('Decoding audio data...');
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-      console.log('Audio buffer decoded, length:', audioBuffer.length, 'samples');
-      
-      console.log('Converting to WAV format...');
-      // Convert to WAV
-      const wav = this.audioBufferToWav(audioBuffer);
-      const wavBlob = new Blob([wav], { type: 'audio/wav' });
-      console.log('WAV blob created, size:', wavBlob.size, 'bytes');
-      
-      console.log('Converting WAV to base64...');
-      // Convert WAV to base64
-      return await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64 = reader.result.split(',')[1]; // Strip `data:audio/wav;base64,`
-          console.log('Base64 conversion complete, length:', base64.length);
-          resolve(base64);
-        };
-        reader.onerror = (error) => {
-          console.error('FileReader error:', error);
-          reject(error);
-        };
-        reader.readAsDataURL(wavBlob);
-      });
-    } catch (error) {
-      console.error('Error converting WebM to WAV:', error);
-      throw error;
-    }
-  }
-
-  async transcribeAudioChunk(audioBlob, timestamp) {
-    console.log('Transcribing audio chunk:', audioBlob.size, 'bytes');
-
-    if (!this.geminiApiKey) {
-      console.warn('No Gemini API key provided.');
-      return null;
+  async processTranscriptionQueue() {
+    if (this.isProcessingQueue || this.transcriptionQueue.length === 0) {
+      return;
     }
 
-    // Validate audio blob
-    if (!audioBlob || audioBlob.size === 0) {
-      console.warn('Invalid audio blob provided');
-      return null;
-    }
+    this.isProcessingQueue = true;
+    console.log(`Processing transcription queue, ${this.transcriptionQueue.length} items pending`);
 
-    try {
-      // Try direct WebM base64 first (more reliable)
-      console.log('Converting WebM to base64 directly...');
-      let base64Audio;
+    while (this.transcriptionQueue.length > 0) {
+      const item = this.transcriptionQueue.shift();
       
       try {
-        base64Audio = await this.webmBlobToBase64(audioBlob);
-        console.log('Direct WebM base64 conversion successful, length:', base64Audio.length);
-      } catch (webmError) {
-        console.log('Direct WebM conversion failed, trying WAV conversion...');
-        // Fallback to WAV conversion
-        base64Audio = await this.webmBlobToWavBase64(audioBlob);
-        console.log('WAV conversion successful, base64 length:', base64Audio.length);
-      }
+        // Add delay to prevent rate limiting (wait 1 second between calls)
+        if (this.lastTranscriptionTime) {
+          const timeSinceLastCall = Date.now() - this.lastTranscriptionTime;
+          if (timeSinceLastCall < 1000) {
+            const delay = 1000 - timeSinceLastCall;
+            console.log(`Rate limiting: waiting ${delay}ms before next API call`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+        this.lastTranscriptionTime = Date.now();
 
-      // Determine the MIME type based on the conversion method used
-      const mimeType = audioBlob.type || 'audio/webm';
-      console.log('Using MIME type for API:', mimeType);
-      
-      const requestBody = {
-        contents: [
-          {
+        // Convert audio chunk to base64 with retry mechanism
+        let base64Audio, mimeType;
+        try {
+          const base64Wav = await this.cleanupAndRetryAudioConversion(item.audioBlob);
+          base64Audio = base64Wav;
+          mimeType = "audio/wav";
+          console.log('Using WAV format for transcription');
+        } catch (conversionError) {
+          console.warn('WAV conversion failed after retries, using original format:', conversionError.message);
+          // If WAV conversion fails, try to use the original blob directly
+          try {
+            base64Audio = await this.blobToBase64(item.audioBlob);
+            mimeType = item.audioBlob.type || "audio/webm";
+            console.log('Using original format for transcription:', mimeType);
+          } catch (fallbackError) {
+            console.error('All audio conversion methods failed:', fallbackError);
+            item.resolve(null);
+            continue;
+          }
+        }
+        
+        const requestBody = {
+          contents: [{
             parts: [
+              { text: "Generate a transcript of this audio." },
               {
-                text: "Please transcribe this audio accurately. Return only the transcribed text without any additional formatting or punctuation unless it's part of the speech."
-              },
-              {
-                inline_data: {
-                  mime_type: mimeType,
+                inlineData: {
+                  mimeType: mimeType,
                   data: base64Audio
                 }
               }
             ]
+          }],
+          generationConfig: { temperature: 0.1, topK: 1, topP: 1, maxOutputTokens: 1024 }
+        };
+
+        console.log(`Sending request to Gemini API... (attempt ${item.retryCount + 1})`);
+        const res = await fetch(`${this.geminiApiUrl}?key=${this.geminiApiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody)
+        });
+
+        if (!res.ok) {
+          const msg = await res.text();
+          console.error("Gemini API error:", res.status, msg);
+          
+          // Handle specific error cases with retry logic
+          if (res.status === 429 && item.retryCount < 2) {
+            console.warn("Rate limit exceeded, waiting before retry...");
+            // Wait longer for rate limit errors
+            await new Promise(resolve => setTimeout(resolve, 2000 * (item.retryCount + 1)));
+            // Re-add to queue for retry
+            this.transcriptionQueue.unshift({
+              ...item,
+              retryCount: item.retryCount + 1
+            });
+            continue;
           }
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          topK: 1,
-          topP: 1,
-          maxOutputTokens: 1024
+          
+          if (res.status >= 500 && item.retryCount < 2) {
+            console.warn("Server error, retrying...");
+            await new Promise(resolve => setTimeout(resolve, 1000 * (item.retryCount + 1)));
+            // Re-add to queue for retry
+            this.transcriptionQueue.unshift({
+              ...item,
+              retryCount: item.retryCount + 1
+            });
+            continue;
+          }
+          
+          item.resolve(null);
+          continue;
         }
-      };
 
-      console.log('Sending request to Gemini API...');
-      const response = await fetch(`${this.geminiApiUrl}?key=${this.geminiApiKey}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      });
+        const result = await res.json();
+        const transcription = result?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+        
+        if (transcription) {
+          console.log('Transcription successful:', transcription);
+        } else {
+          console.warn('No valid transcription returned from Gemini:', result);
+        }
+        
+        item.resolve(transcription);
 
-      console.log('Gemini API response status:', response.status);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Gemini API error:', response.status, errorText);
-        throw new Error(`Gemini API returned error ${response.status}: ${errorText}`);
+      } catch (error) {
+        console.error('Transcription error:', error);
+        
+        // Retry on network errors
+        if ((error.name === 'TypeError' || error.message.includes('fetch')) && item.retryCount < 2) {
+          console.warn('Network error, retrying...');
+          await new Promise(resolve => setTimeout(resolve, 1000 * (item.retryCount + 1)));
+          // Re-add to queue for retry
+          this.transcriptionQueue.unshift({
+            ...item,
+            retryCount: item.retryCount + 1
+          });
+          continue;
+        }
+        
+        item.resolve(null);
       }
-
-      const result = await response.json();
-      console.log('Gemini API response:', result);
-
-      if (
-        result.candidates &&
-        result.candidates[0] &&
-        result.candidates[0].content &&
-        result.candidates[0].content.parts &&
-        result.candidates[0].content.parts[0]
-      ) {
-        const transcription = result.candidates[0].content.parts[0].text;
-        console.log('Transcription successful:', transcription);
-        return transcription;
-      } else {
-        console.warn('No valid transcription returned from Gemini:', result);
-        return null;
-      }
-
-    } catch (error) {
-      console.error('Transcription error:', error);
-      return null;
     }
+
+    this.isProcessingQueue = false;
+    console.log('Transcription queue processing complete');
   }
 
   addTranscriptionSegment(tabId, text, timestamp) {
@@ -1072,6 +1515,9 @@ class AudioRecorder {
     
     console.log('Sidepanel: Total segments for tab:', segments.length);
     this.renderTranscription(tabId);
+    
+    // Save transcriptions to storage whenever a new segment is added
+    this.saveRecordingsToStorage();
   }
 
   renderTranscription(tabId) {
@@ -1095,7 +1541,20 @@ class AudioRecorder {
 
     console.log('Sidepanel: Building HTML for segments...');
     const transcriptionHtml = segments.map(segment => {
-      const timeStr = new Date(segment.timestamp).toLocaleTimeString();
+      let timeStr;
+      if (segment.timestamp && typeof segment.timestamp === 'object' && segment.timestamp.videoTime !== undefined) {
+        // Use video timestamp if available
+        const videoTime = segment.timestamp.videoTime;
+        const minutes = Math.floor(videoTime / 60);
+        const seconds = videoTime % 60;
+        timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+      } else if (segment.timestamp) {
+        // Fallback to system time
+        timeStr = new Date(segment.timestamp).toLocaleTimeString();
+      } else {
+        timeStr = 'Unknown time';
+      }
+      
       return `
         <div class="transcription-segment">
           <div class="transcription-timestamp">${timeStr}</div>
@@ -1113,7 +1572,7 @@ class AudioRecorder {
   }
 
   loadRecordings() {
-    chrome.storage.local.get(['recordings'], (result) => {
+    chrome.storage.local.get(['recordings', 'transcriptions'], (result) => {
       if (chrome.runtime.lastError) {
         console.error('Error loading recordings:', chrome.runtime.lastError);
         this.renderRecordings();
@@ -1124,15 +1583,35 @@ class AudioRecorder {
         // Convert storage format back to recording objects
         this.recordings = result.recordings.map(recording => ({
           ...recording,
+          title: typeof recording.title === 'string' ? recording.title : 'Recording - Unknown Tab',
+          domain: typeof recording.domain === 'string' ? recording.domain : 'Unknown Domain',
           blob: null // Blob will be null for loaded recordings
         }));
         console.log('Recordings loaded from storage:', this.recordings.length);
+      }
+      
+      if (result.transcriptions) {
+        // Load transcriptions back into memory
+        for (const [tabId, segments] of Object.entries(result.transcriptions)) {
+          this.transcriptions.set(parseInt(tabId), segments);
+        }
+        console.log('Transcriptions loaded from storage:', Object.keys(result.transcriptions).length);
       }
       
       this.renderRecordings();
     });
   }
 
+  stopTranscriptionForTab(tabId) {
+    console.log('Sidepanel: Stopping transcription for tab:', tabId);
+    const transcriptionQueue = this.transcriptionQueue.filter(item => item.tabId === tabId);
+    transcriptionQueue.forEach(item => {
+      console.log('Sidepanel: Resolving transcription queue item for tab:', tabId);
+      item.resolve(null); // Resolve with null to indicate cancellation
+    });
+    this.transcriptionQueue = this.transcriptionQueue.filter(item => item.tabId !== tabId);
+    console.log('Sidepanel: Transcription queue after stopping:', this.transcriptionQueue.length);
+  }
 
 
 }
