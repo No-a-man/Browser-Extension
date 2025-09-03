@@ -10,7 +10,7 @@ class AudioRecorder {
     this.chunkTimers = new Map(); // tabId -> chunk timer
     
     // Gemini API configuration
-    this.geminiApiKey = 'AIzaSyCg8OOanPeGz-_TtieiTxgV8ScE_4ueh28';
+    this.geminiApiKey = null; // Will be loaded from storage
     this.geminiApiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent';
     
     // Transcription queue management
@@ -29,6 +29,9 @@ class AudioRecorder {
     this.loadRecordings();
     this.discoverTabs();
     
+    // Load API key from storage
+    this.loadApiKey();
+    
     // Periodic cleanup of audio contexts
     setInterval(() => {
       this.cleanupAudioContexts();
@@ -41,10 +44,11 @@ class AudioRecorder {
     this.transcriptionContainer = document.getElementById('transcriptionContainer');
     this.transcriptionText = document.getElementById('transcriptionText');
     
-    // API key button (removed since we're using hardcoded key)
-    // document.querySelector('.api-key-btn').addEventListener('click', () => {
-    //   this.promptForApiKey();
-    // });
+    // Add configuration button event listener
+    const configBtn = document.getElementById('configBtn');
+    if (configBtn) {
+      configBtn.addEventListener('click', () => this.showApiKeyConfig());
+    }
   }
 
 
@@ -243,45 +247,38 @@ class AudioRecorder {
          console.log('Sidepanel: Attempting tab capture for specific tab audio');
          
          try {
-           // First, ensure the extension is invoked by executing a script on the page
-           await chrome.scripting.executeScript({
-             target: { tabId: currentTabId },
-             func: () => {
-               console.log('Extension invoked on page for tab capture');
-               // This ensures the extension is properly invoked
-             }
-           });
-           
-           // Small delay to ensure the script execution is complete
-           await new Promise(resolve => setTimeout(resolve, 100));
-           
-           // Now attempt tab capture
-           const stream = await new Promise((resolve, reject) => {
-             chrome.tabCapture.capture({ 
-               audio: true,
-               video: false
-             }, (capturedStream) => {
-               console.log('Sidepanel: Tab capture callback executed');
-               console.log('Sidepanel: Stream received:', capturedStream);
-               
-               if (chrome.runtime.lastError) {
-                 console.error('Sidepanel: Tab capture error:', chrome.runtime.lastError);
-                 reject(new Error(chrome.runtime.lastError.message));
-                 return;
-               }
-               
-               if (!capturedStream) {
-                 reject(new Error('No audio stream available. Please ensure the tab has audio content and try again.'));
-                 return;
-               }
-               
-               console.log('Sidepanel: Tab capture successful');
-               resolve(capturedStream);
-             });
-           });
-           
-           console.log('Sidepanel: Tab capture successful, setting up recording');
-           this.setupRecording(currentTabId, stream);
+          // Ensure the extension has the necessary permissions by checking runtime
+          if (!chrome.runtime || !chrome.tabCapture) {
+            throw new Error('Extension permissions not available. Please refresh the page and try again.');
+          }
+          
+          // Now attempt tab capture directly - this will activate the extension
+          const stream = await new Promise((resolve, reject) => {
+            chrome.tabCapture.capture({ 
+              audio: true,
+              video: false
+            }, (capturedStream) => {
+              console.log('Sidepanel: Tab capture callback executed');
+              console.log('Sidepanel: Stream received:', capturedStream);
+              
+              if (chrome.runtime.lastError) {
+                console.error('Sidepanel: Tab capture error:', chrome.runtime.lastError);
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+              }
+              
+              if (!capturedStream) {
+                reject(new Error('No audio stream available. Please ensure the tab has audio content and try again.'));
+                return;
+              }
+              
+              console.log('Sidepanel: Tab capture successful');
+              resolve(capturedStream);
+            });
+          });
+          
+          console.log('Sidepanel: Tab capture successful, setting up recording');
+          this.setupRecording(currentTabId, stream);
            
            // Restore button state after successful capture
            const successBtn = document.querySelector(`[data-tab-id="${currentTabId}"]`);
@@ -295,7 +292,7 @@ class AudioRecorder {
            
            let errorMessage = 'Unable to capture tab audio. ';
            if (tabCaptureError.message.includes('Extension has not been invoked')) {
-             errorMessage = 'Extension not properly invoked. Please click on the YouTube tab, click the extension icon in the toolbar, then try recording again.';
+             errorMessage = 'Extension needs to be activated. This should happen automatically when you click Start. If you continue to see this error, try refreshing the page and clicking Start again. The extension will automatically request the necessary permissions.';
            } else if (tabCaptureError.message.includes('Cannot capture Chrome internal pages')) {
              errorMessage = tabCaptureError.message;
            } else if (tabCaptureError.message.includes('Cannot capture this type of page')) {
@@ -1033,28 +1030,64 @@ class AudioRecorder {
     });
   }
 
-  // API key methods removed since we're using hardcoded key
-  // loadApiKey() {
-  //   chrome.storage.local.get(['geminiApiKey'], (result) => {
-  //     if (result.geminiApiKey) {
-  //       this.geminiApiKey = result.geminiApiKey;
-  //       console.log('Gemini API key loaded');
-  //     } else {
-  //       // Prompt user for API key
-  //       this.promptForApiKey();
-  //     }
-  //   });
-  // }
+  // Load the API key from Chrome storage when the extension starts
+  // If no key is found, we'll prompt the user to enter one
+  async loadApiKey() {
+    try {
+      const result = await chrome.storage.local.get(['geminiApiKey']);
+      if (result.geminiApiKey) {
+        this.geminiApiKey = result.geminiApiKey;
+        console.log('Gemini API key loaded from storage');
+      } else {
+        // No API key found, prompt user to configure
+        this.promptForApiKey();
+      }
+    } catch (error) {
+      console.error('Error loading API key:', error);
+      this.promptForApiKey();
+    }
+  }
 
-  // promptForApiKey() {
-  //   const apiKey = prompt('Please enter your Google Gemini API key to enable transcription:');
-  //   if (apiKey && apiKey.trim()) {
-  //     this.geminiApiKey = apiKey.trim();
-  //     chrome.storage.local.set({ geminiApiKey: this.geminiApiKey }, () => {
-  //       console.log('Gemini API key saved');
-  //     });
-  //   }
-  // }
+  // Show a welcome prompt for first-time users to enter their API key
+  // This gives them clear instructions on where to get the key from
+  promptForApiKey() {
+    const apiKey = prompt('Welcome to the Audio Transcriber!\n\nPlease enter your Google Gemini API key to enable transcription:\n\n1. Go to https://aistudio.google.com/app/apikey\n2. Create a new API key\n3. Copy and paste it here\n\nAPI Key:');
+    
+    if (apiKey && apiKey.trim()) {
+      this.geminiApiKey = apiKey.trim();
+      // Save the key to storage so we don't have to ask again
+      chrome.storage.local.set({ geminiApiKey: this.geminiApiKey }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('Error saving API key:', chrome.runtime.lastError);
+        } else {
+          console.log('API key saved to storage');
+        }
+      });
+    } else {
+      // User cancelled or entered empty key, show a helpful warning
+      alert('API key is required for transcription to work. You can configure it later by clicking the extension icon and selecting "Configure API Key".');
+    }
+  }
+
+  // Allow users to update their API key anytime through the configure button
+  // Shows the current key (partially masked for security) and lets them enter a new one
+  showApiKeyConfig() {
+    const currentKey = this.geminiApiKey ? '***' + this.geminiApiKey.slice(-4) : 'Not configured';
+    const newKey = prompt(`Current API Key: ${currentKey}\n\nEnter new Google Gemini API key:\n\n1. Go to https://aistudio.google.com/app/apikey\n2. Create a new API key\n3. Copy and paste it here\n\nNew API Key:`);
+    
+    if (newKey && newKey.trim()) {
+      this.geminiApiKey = newKey.trim();
+      // Save the new key to storage and let the user know it worked
+      chrome.storage.local.set({ geminiApiKey: this.geminiApiKey }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('Error saving API key:', chrome.runtime.lastError);
+        } else {
+          console.log('New API key updated successfully!');
+          alert('API key updated successfully!');
+        }
+      });
+    }
+  }
 
 
 
